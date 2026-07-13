@@ -1,4 +1,10 @@
 langchain
 langchain-ollama
 langchain-chroma
+langchain-community
+sentence-transformers
 pandas
+pdfplumber
+PyMuPDF
+rank-bm25
+streamlit
