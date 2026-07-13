@@ -39,16 +39,52 @@ No cloud APIs required — your documents never leave your computer.
 ## Project Structure
 
 ```
-Local AI/
-├── app.py              # Streamlit web UI
-├── main.py             # CLI chat loop with ReAct agent
-├── vector.py           # PDF ingestion, ChromaDB, BM25, hybrid search
-├── config.py           # Centralized settings
-├── requirements.txt    # Python dependencies
-├── pdfs/               # Uploaded / ingested PDF files (created at runtime)
-├── chroma_db/          # Persisted Chroma vector store (created at runtime)
-└── README.md
+rag_project/
+├── app.py
+├── main.py
+├── config.py
+├── config.yaml
+├── requirements.txt
+├── .env
+├── .gitignore
+├── src/
+│   ├── ingestion/
+│   │   ├── __init__.py
+│   │   └── loader.py
+│   ├── chunking/
+│   │   ├── __init__.py
+│   │   └── chunker.py
+│   ├── embeddings/
+│   │   ├── __init__.py
+│   │   └── embedder.py
+│   ├── vectordb/
+│   │   ├── __init__.py
+│   │   └── vector_store.py
+│   ├── retrieval/
+│   │   ├── __init__.py
+│   │   └── retriever.py
+│   ├── prompts/
+│   │   ├── __init__.py
+│   │   └── prompt_templates.py
+│   ├── llm/
+│   │   ├── __init__.py
+│   │   └── llm_client.py
+│   ├── api/
+│   │   ├── __init__.py
+│   │   └── routes.py
+│   └── utils/
+│       ├── __init__.py
+│       └── helpers.py
+├── tests/
+│   └── test_app.py
+├── logs/
+│   └── app.log
+├── pdfs/
+├── chroma_db/
+└── chroma_langchain_db/
 ```
+
+The top-level `app.py`, `main.py`, `config.py`, and `vector.py` remain as compatibility entry points while the implementation lives under `src/`.
 
 ## Setup
 

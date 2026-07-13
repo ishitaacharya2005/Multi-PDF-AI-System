@@ -1,71 +1,54 @@
+from __future__ import annotations
+
 import os
 import re
-from typing import List, Optional
+from typing import Optional
 
 import pdfplumber
 from langchain_chroma import Chroma
-from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_core.documents import Document
 from rank_bm25 import BM25Okapi
 
-from config import (
-    BM25_TOP_K,
-    CHROMA_DB_PATH,
-    CHUNK_OVERLAP,
-    CHUNK_SIZE,
-    EMBEDDING_MODEL,
-    RRF_K,
-    TOP_K,
-)
+from config import BM25_TOP_K, CHROMA_DB_PATH, RRF_K, TOP_K
+from src.chunking.chunker import chunk_text
+from src.embeddings.embedder import get_embeddings
+from src.utils.helpers import ensure_directory
 
 COLLECTION_NAME = "pdf_documents"
 PDF_DIR = os.path.join(os.path.dirname(CHROMA_DB_PATH) or ".", "pdfs")
 
 vector_store: Optional[Chroma] = None
 bm25_index: Optional[BM25Okapi] = None
-indexed_documents: List[Document] = []
-last_retrieval_sources: List[dict] = []
+indexed_documents: list[Document] = []
+last_retrieval_sources: list[dict] = []
 
 
-def _tokenize(text: str) -> List[str]:
+def tokenize(text: str) -> list[str]:
     return re.findall(r"\w+", text.lower())
 
 
-def _chunk_text(text: str) -> List[str]:
-    chunks = []
-    start = 0
-    while start < len(text):
-        end = start + CHUNK_SIZE
-        chunks.append(text[start:end])
-        if end >= len(text):
-            break
-        start += CHUNK_SIZE - CHUNK_OVERLAP
-    return chunks
-
-
-def _doc_key(doc: Document) -> str:
+def doc_key(doc: Document) -> str:
     meta = doc.metadata or {}
     return f"{meta.get('source', '')}|{meta.get('page', '')}|{meta.get('chunk', '')}|{doc.page_content[:80]}"
 
 
-def _get_embeddings() -> HuggingFaceEmbeddings:
-    return HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL)
-
-
-def _init_vector_store() -> Chroma:
+def init_vector_store() -> Chroma:
     global vector_store
-    os.makedirs(CHROMA_DB_PATH, exist_ok=True)
+    ensure_directory(CHROMA_DB_PATH)
     vector_store = Chroma(
         collection_name=COLLECTION_NAME,
         persist_directory=CHROMA_DB_PATH,
-        embedding_function=_get_embeddings(),
+        embedding_function=get_embeddings(),
     )
     return vector_store
 
 
-def load_pdfs(pdf_paths: List[str]) -> List[Document]:
-    """Load PDF files with pdfplumber and return chunked Document objects."""
-    documents: List[Document] = []
+def ensure_pdf_dir() -> str:
+    return ensure_directory(PDF_DIR)
+
+
+def load_pdfs(pdf_paths: list[str]) -> list[Document]:
+    documents: list[Document] = []
     for pdf_path in pdf_paths:
         filename = os.path.basename(pdf_path)
         with pdfplumber.open(pdf_path) as pdf:
@@ -73,7 +56,7 @@ def load_pdfs(pdf_paths: List[str]) -> List[Document]:
                 text = page.extract_text() or ""
                 if not text.strip():
                     continue
-                for chunk_idx, chunk in enumerate(_chunk_text(text)):
+                for chunk_idx, chunk in enumerate(chunk_text(text)):
                     documents.append(
                         Document(
                             page_content=chunk,
@@ -87,17 +70,15 @@ def load_pdfs(pdf_paths: List[str]) -> List[Document]:
     return documents
 
 
-def build_bm25_index(documents: List[Document]) -> BM25Okapi:
-    """Build a BM25 index from the provided documents."""
+def build_bm25_index(documents: list[Document]) -> BM25Okapi:
     global bm25_index, indexed_documents
     indexed_documents = list(documents)
-    tokenized_corpus = [_tokenize(doc.page_content) for doc in indexed_documents]
+    tokenized_corpus = [tokenize(doc.page_content) for doc in indexed_documents]
     bm25_index = BM25Okapi(tokenized_corpus)
     return bm25_index
 
 
-def _sync_documents_from_chroma() -> None:
-    """Reload in-memory document list from the persisted Chroma collection."""
+def sync_documents_from_chroma() -> None:
     global indexed_documents
     if vector_store is None:
         indexed_documents = []
@@ -111,89 +92,48 @@ def _sync_documents_from_chroma() -> None:
     ]
 
 
-def hybrid_search(query: str, top_k: int = TOP_K) -> List[Document]:
-    """Merge BM25 and ChromaDB results using Reciprocal Rank Fusion."""
-    global last_retrieval_sources
-
-    if not indexed_documents or bm25_index is None:
-        last_retrieval_sources = []
-        return []
-
-    tokenized_query = _tokenize(query)
-    bm25_scores = bm25_index.get_scores(tokenized_query)
-    bm25_ranked_indices = sorted(
-        range(len(bm25_scores)), key=lambda i: bm25_scores[i], reverse=True
-    )[:BM25_TOP_K]
-
-    chroma_results = vector_store.similarity_search(query, k=BM25_TOP_K)
-
-    rrf_scores: dict[str, float] = {}
-    doc_by_key: dict[str, Document] = {}
-
-    for rank, idx in enumerate(bm25_ranked_indices):
-        doc = indexed_documents[idx]
-        key = _doc_key(doc)
-        doc_by_key[key] = doc
-        rrf_scores[key] = rrf_scores.get(key, 0.0) + 1.0 / (RRF_K + rank + 1)
-
-    for rank, doc in enumerate(chroma_results):
-        key = _doc_key(doc)
-        doc_by_key[key] = doc
-        rrf_scores[key] = rrf_scores.get(key, 0.0) + 1.0 / (RRF_K + rank + 1)
-
-    ranked_keys = sorted(rrf_scores.keys(), key=lambda k: rrf_scores[k], reverse=True)
-    results = [doc_by_key[key] for key in ranked_keys[:top_k]]
-
-    last_retrieval_sources = [
-        {"source": doc.metadata.get("source", "unknown"), "page": doc.metadata.get("page", "?")}
-        for doc in results
-    ]
-    return results
+def refresh_indexes() -> None:
+    global bm25_index
+    if indexed_documents:
+        build_bm25_index(indexed_documents)
+    else:
+        bm25_index = None
 
 
-def ingest_pdfs(pdf_paths: List[str]) -> int:
-    """Load PDFs, add to ChromaDB, and rebuild the BM25 index."""
+def store_documents(new_docs: list[Document]) -> int:
     global vector_store
 
-    if not pdf_paths:
+    if not new_docs:
         return count_indexed_pdfs()
 
     if vector_store is None:
-        _init_vector_store()
-
-    new_docs = load_pdfs(pdf_paths)
-    if not new_docs:
-        return count_indexed_pdfs()
+        init_vector_store()
 
     ids = [
         f"{doc.metadata['source']}_{doc.metadata['page']}_{doc.metadata['chunk']}"
         for doc in new_docs
     ]
     vector_store.add_documents(documents=new_docs, ids=ids)
-    _sync_documents_from_chroma()
-    build_bm25_index(indexed_documents)
+    sync_documents_from_chroma()
+    refresh_indexes()
     return count_indexed_pdfs()
 
 
 def count_indexed_pdfs() -> int:
-    """Return the number of unique PDF filenames in the index."""
     sources = {doc.metadata.get("source") for doc in indexed_documents if doc.metadata.get("source")}
     return len(sources)
 
 
-def get_documents_by_source(filename: str) -> List[Document]:
-    """Return all indexed chunks belonging to a PDF filename."""
+def get_documents_by_source(filename: str) -> list[Document]:
     return [doc for doc in indexed_documents if doc.metadata.get("source") == filename]
 
 
 def resolve_pdf_path(filename: str) -> Optional[str]:
-    """Resolve a PDF filename to its on-disk path."""
     path = os.path.join(PDF_DIR, filename)
     return path if os.path.isfile(path) else None
 
 
 def extract_tables(filename: str, page: int) -> str:
-    """Extract tables from a PDF page as markdown using pdfplumber."""
     pdf_path = resolve_pdf_path(filename)
     if not pdf_path:
         return f"PDF file '{filename}' not found in {PDF_DIR}."
@@ -206,7 +146,7 @@ def extract_tables(filename: str, page: int) -> str:
         if not tables:
             return f"No tables found on page {page} of '{filename}'."
 
-        markdown_parts = []
+        markdown_parts: list[str] = []
         for i, table in enumerate(tables, start=1):
             if not table:
                 continue
@@ -221,16 +161,54 @@ def extract_tables(filename: str, page: int) -> str:
         return "\n".join(markdown_parts) if markdown_parts else f"No tables found on page {page} of '{filename}'."
 
 
-def ensure_pdf_dir() -> str:
-    os.makedirs(PDF_DIR, exist_ok=True)
-    return PDF_DIR
+def ingest_pdfs(pdf_paths: list[str]) -> int:
+    ensure_pdf_dir()
+    return store_documents(load_pdfs(pdf_paths))
+
+
+def hybrid_search(query: str, top_k: int = TOP_K) -> list[Document]:
+    global last_retrieval_sources
+
+    if not indexed_documents or bm25_index is None or vector_store is None:
+        last_retrieval_sources = []
+        return []
+
+    tokenized_query = tokenize(query)
+    bm25_scores = bm25_index.get_scores(tokenized_query)
+    bm25_ranked_indices = sorted(
+        range(len(bm25_scores)), key=lambda i: bm25_scores[i], reverse=True
+    )[:BM25_TOP_K]
+
+    chroma_results = vector_store.similarity_search(query, k=BM25_TOP_K)
+
+    rrf_scores: dict[str, float] = {}
+    doc_by_key: dict[str, Document] = {}
+
+    for rank, idx in enumerate(bm25_ranked_indices):
+        doc = indexed_documents[idx]
+        key = doc_key(doc)
+        doc_by_key[key] = doc
+        rrf_scores[key] = rrf_scores.get(key, 0.0) + 1.0 / (RRF_K + rank + 1)
+
+    for rank, doc in enumerate(chroma_results):
+        key = doc_key(doc)
+        doc_by_key[key] = doc
+        rrf_scores[key] = rrf_scores.get(key, 0.0) + 1.0 / (RRF_K + rank + 1)
+
+    ranked_keys = sorted(rrf_scores.keys(), key=lambda key: rrf_scores[key], reverse=True)
+    results = [doc_by_key[key] for key in ranked_keys[:top_k]]
+
+    last_retrieval_sources = [
+        {"source": doc.metadata.get("source", "unknown"), "page": doc.metadata.get("page", "?")}
+        for doc in results
+    ]
+    return results
 
 
 def initialize_index() -> None:
-    """Initialize ChromaDB and rebuild BM25 from any persisted documents."""
-    global vector_store, bm25_index
-    _init_vector_store()
-    _sync_documents_from_chroma()
+    global bm25_index
+    init_vector_store()
+    sync_documents_from_chroma()
     if indexed_documents:
         build_bm25_index(indexed_documents)
     else:

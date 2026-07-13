@@ -8,3 +8,4 @@ pdfplumber
 PyMuPDF
 rank-bm25
 streamlit
+PyYAML

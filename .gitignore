@@ -1,0 +1,13 @@
+.venv/
+.vscode/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+logs/*.log
+!logs/app.log
+chroma_db/
+chroma_langchain_db/
+pdfs/*.pdf
+.env
